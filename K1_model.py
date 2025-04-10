@@ -81,28 +81,6 @@ def calculate_target(df):
         raise
 
 
-def temporal_split(df, date_col='Encounter_Date'):
-    """
-    Split data temporally into train/validation/test sets
-    
-    Args:
-        df (pd.DataFrame): Input DataFrame
-        date_col (str): Date column for splitting
-        
-    Returns:
-        tuple: (train, val, test) DataFrames
-    """
-    try:
-        train = df[df[date_col].dt.year <= 2020]
-        val = df[df[date_col].dt.year == 2021]
-        test = df[df[date_col].dt.year >= 2022]
-        
-        logging.info(f"Temporal split - Train: {len(train)}, Val: {len(val)}, Test: {len(test)}")
-        return train, val, test
-    except Exception as e:
-        logging.error(f"Error in temporal split: {str(e)}")
-        raise
-
 def create_preprocessor():
     """
     Create preprocessing pipeline for model features
@@ -247,6 +225,36 @@ def save_artifacts(model, preprocessor, file_prefix):
         logging.error(f"Error saving artifacts: {str(e)}")
         raise
 
+def temporal_split(df):
+    """
+    Split patients (not encounters) temporally based on their last encounter
+    
+    Args:
+        df (pd.DataFrame): Input DataFrame
+        
+    Returns:
+        tuple: (train, val, test) DataFrames
+    """
+    try:
+        # Get latest encounter per patient
+        patient_last_encounter = df.groupby('person_id')['Encounter_Date'].max()
+        
+        # Split patients based on last encounter year
+        train_patients = patient_last_encounter[patient_last_encounter.dt.year <= 2020].index
+        val_patients = patient_last_encounter[patient_last_encounter.dt.year == 2021].index
+        test_patients = patient_last_encounter[patient_last_encounter.dt.year >= 2022].index
+        
+        # Split encounters accordingly
+        train = df[df['person_id'].isin(train_patients)]
+        val = df[df['person_id'].isin(val_patients)]
+        test = df[df['person_id'].isin(test_patients)]
+        
+        logging.info(f"Patient-based split - Train: {len(train_patients)}, Val: {len(val_patients)}, Test: {len(test_patients)}")
+        return train, val, test
+    except Exception as e:
+        logging.error(f"Error in temporal split: {str(e)}")
+        raise
+
 def main():
     """Main execution pipeline"""
     try:
@@ -254,17 +262,16 @@ def main():
         df = load_data("data/AI Predictive Modeling HIV AMPATH Feature Engineering.csv")
         df = calculate_target(df)
         
-        # 2. Temporal split
+        # 2. Calculate risk tiers FIRST (patient-level)
+        df = calculate_risk_tiers(df)
+        
+        # 3. Split patients temporally
         train, val, test = temporal_split(df)
         
-        # 3. Calculate risk tiers
-        train = calculate_risk_tiers(train)
-        val = calculate_risk_tiers(val)
-        
-        # 4. Prepare model features
+        # 4. Prepare model features (exclude leakage risks)
         features = [
-            'num_past_iits', 'pct_late_arrivals', 'CD4_Count',
-            'Viral_Load', 'age_at_scheduled_appointment',
+            'num_past_iits', 'pct_late_arrivals', 
+            'CD4_Count', 'Viral_Load', 'age_at_scheduled_appointment',
             'Current_WHO_HIV_Stage', 'gender'
         ]
         
@@ -283,7 +290,7 @@ def main():
         save_artifacts(model, preprocessor, "hiv_adherence_model")
         
         return {
-            'risk_tier_distribution': val['risk_tier'].value_counts().to_dict(),
+            'patient_risk_distribution': df.groupby('person_id')['risk_tier'].first().value_counts().to_dict(),
             'model_metrics': metrics
         }
         
@@ -294,5 +301,5 @@ def main():
 if __name__ == "__main__":
     results = main()
     print("\nFinal Results:")
-    print(f"Risk Tier Distribution: {results['risk_tier_distribution']}")
+    print(f"Risk Tier Distribution: {results['patient_risk_distribution']}")  # Changed key name
     print(f"Model Metrics: {results['model_metrics']}")
