@@ -255,11 +255,90 @@ def temporal_split(df):
         logging.error(f"Error in temporal split: {str(e)}")
         raise
 
+
+def create_sample_predictions(model, test_data, sample_size=100, output_path="sample_predictions.csv"):
+    """
+    Generate sample predictions for demonstration and analysis
+    
+    Args:
+        model: Trained model
+        test_data (pd.DataFrame): Test dataset
+        sample_size (int): Number of unique patients to sample (one record per patient)
+        output_path (str): Path to save sample predictions
+        
+    Returns:
+        pd.DataFrame: Sample predictions with key columns (one row per patient)
+    """
+    try:
+        logging.info("Creating sample predictions...")
+        
+        # Define required columns that must not have missing values
+        required_columns = [
+            'Next_clinical_appointment', 'CD4_Count', 'Viral_Load', 
+            'num_past_iits', 'pct_late_arrivals'
+        ]
+        
+        # Filter test data to only include rows with no missing values in required columns
+        complete_data = test_data.dropna(subset=required_columns)
+        
+        # Get unique patients from complete data
+        unique_patients = complete_data['person_id'].unique()
+        
+        # Sample patients (if we have enough)
+        sample_size = min(sample_size, len(unique_patients))
+        sampled_patients = np.random.choice(unique_patients, size=sample_size, replace=False)
+        
+        # Create empty DataFrame to hold complete records
+        sample_data = pd.DataFrame()
+        
+        # For each sampled patient, get their latest complete encounter
+        for patient_id in sampled_patients:
+            patient_records = complete_data[complete_data['person_id'] == patient_id]
+            
+            if not patient_records.empty:
+                # Get the latest complete record
+                latest_record = patient_records.loc[patient_records['Encounter_Date'].idxmax()]
+                sample_data = pd.concat([sample_data, pd.DataFrame([latest_record])], ignore_index=True)
+        
+        # Check if we have enough complete records
+        if len(sample_data) < sample_size:
+            logging.warning(f"Only found {len(sample_data)} complete patient records instead of {sample_size}")
+        
+        # Generate predictions
+        features = [
+            'num_past_iits', 'pct_late_arrivals', 'CD4_Count',
+            'Viral_Load', 'age_at_scheduled_appointment',
+            'Current_WHO_HIV_Stage', 'gender'
+        ]
+        
+        # Add predictions to sample data
+        sample_data['predicted_iit_prob'] = model.predict_proba(sample_data[features])[:, 1]
+
+        # Select key columns for analysis
+        output_cols = [
+            'person_id', 'Encounter_Date', 'Next_clinical_appointment', 'overall_appointment_success', 'Current_WHO_HIV_Stage', 
+         'risk_tier', 'adherence_target',
+            'num_past_iits', 'pct_late_arrivals', 
+            'CD4_Count', 'Viral_Load'
+        ]
+
+        # Save to CSV
+        sample_data[output_cols].to_csv(output_path, index=False)
+        logging.info(f"Saved sample predictions for exactly {len(sample_data)} patients to {output_path}")
+        
+        return sample_data[output_cols]
+
+    except Exception as e:
+        logging.error(f"Error creating sample predictions: {str(e)}")
+        raise
+
+
+
 def main():
     """Main execution pipeline"""
     try:
         # 1. Load and prepare data
-        df = load_data("data/AI Predictive Modeling HIV AMPATH Feature Engineering.csv")
+        df = load_data("data/AI_Predictive_Modeling_HIV_AMPATH_FeatureEngineering.csv")
         df = calculate_target(df)
         
         # 2. Calculate risk tiers FIRST (patient-level)
@@ -267,7 +346,14 @@ def main():
         
         # 3. Split patients temporally
         train, val, test = temporal_split(df)
-        
+        # Save full test data with risk tiers
+        test.to_csv(
+            "data/AI_Predictive_Modeling_HIV_AMPATH_FeatureEngineering_Risk_Tier_Test.csv",
+            index=False,
+            encoding='utf-8'
+        )
+        logging.info("Saved full test data with risk tiers")
+
         # 4. Prepare model features (exclude leakage risks)
         features = [
             'num_past_iits', 'pct_late_arrivals', 
@@ -288,6 +374,14 @@ def main():
         
         # 7. Save artifacts
         save_artifacts(model, preprocessor, "hiv_adherence_model")
+        
+        # 8. Create sample predictions
+        _ = create_sample_predictions(
+            model=model,
+            test_data=test,
+            sample_size=100,
+            output_path="data/sample_predictions.csv"
+        )
         
         return {
             'patient_risk_distribution': df.groupby('person_id')['risk_tier'].first().value_counts().to_dict(),
