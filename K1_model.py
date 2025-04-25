@@ -9,16 +9,22 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
+from xgboost import XGBClassifier
 import joblib
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Ensure models directory exists
+os.makedirs('models', exist_ok=True)
 
 def load_data(file_path):
     """
@@ -132,6 +138,58 @@ def train_adherence_model(X_train, y_train, preprocessor):
         return model
     except Exception as e:
         logging.error(f"Error training model: {str(e)}")
+        raise
+
+def train_random_forest_model(X_train, y_train, preprocessor):
+    """
+    Train Random Forest model for adherence prediction
+    """
+    try:
+        # Create pipeline
+        model = Pipeline([
+            ('preprocessor', preprocessor),
+            ('classifier', RandomForestClassifier(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_split=10,
+                class_weight='balanced',
+                random_state=42,
+                n_jobs=-1  # Use all available cores
+            ))
+        ])
+        
+        # Train model
+        model.fit(X_train, y_train)
+        logging.info("Random Forest model trained successfully")
+        return model
+    except Exception as e:
+        logging.error(f"Error training Random Forest model: {str(e)}")
+        raise
+
+def train_xgboost_model(X_train, y_train, preprocessor):
+    """
+    Train XGBoost model for adherence prediction
+    """
+    try:
+        # Create pipeline with proper XGBoost parameters
+        model = Pipeline([
+            ('preprocessor', preprocessor),
+            ('classifier', XGBClassifier(
+                objective='binary:logistic',
+                n_estimators=100,
+                max_depth=4,
+                learning_rate=0.1,
+                tree_method='hist',  # More efficient tree method
+                random_state=42
+            ))
+        ])
+        
+        # Train model
+        model.fit(X_train, y_train)
+        logging.info("XGBoost model trained successfully")
+        return model
+    except Exception as e:
+        logging.error(f"Error training XGBoost model: {str(e)}")
         raise
 
 def calculate_risk_tiers(df):
@@ -354,30 +412,61 @@ def main():
         )
         logging.info("Saved full test data with risk tiers")
 
-        # 4. Prepare model features (exclude leakage risks)
+        # 4. Prepare model features
         features = [
             'num_past_iits', 'pct_late_arrivals', 
             'CD4_Count', 'Viral_Load', 'age_at_scheduled_appointment',
             'Current_WHO_HIV_Stage', 'gender'
         ]
         
-        # 5. Train adherence model
+        # 5. Train all models
         preprocessor = create_preprocessor()
-        model = train_adherence_model(
+        
+        # Train Logistic Regression
+        lr_model = train_adherence_model(
             train[features], 
             train['adherence_target'],
             preprocessor
         )
         
-        # 6. Evaluate model
-        metrics = evaluate_model(model, val[features], val['adherence_target'])
+        # Train XGBoost
+        xgb_model = train_xgboost_model(
+            train[features], 
+            train['adherence_target'],
+            preprocessor
+        )
         
-        # 7. Save artifacts
-        save_artifacts(model, preprocessor, "hiv_adherence_model")
+        # Train Random Forest
+        rf_model = train_random_forest_model(
+            train[features], 
+            train['adherence_target'],
+            preprocessor
+        )
         
-        # 8. Create sample predictions
+        # 6. Evaluate all models
+        metrics = {
+            'logistic_regression': evaluate_model(lr_model, val[features], val['adherence_target']),
+            'xgboost': evaluate_model(xgb_model, val[features], val['adherence_target']),
+            'random_forest': evaluate_model(rf_model, val[features], val['adherence_target'])
+        }
+        
+        # 7. Save all artifacts
+        joblib.dump(lr_model, "models/lr_model.pkl")
+        joblib.dump(xgb_model, "models/xgb_model.pkl")
+        joblib.dump(rf_model, "models/rf_model.pkl")
+        joblib.dump(preprocessor, "models/preprocessor.pkl")
+        logging.info("All models and preprocessor saved successfully")
+        
+        # 8. Create sample predictions (using best model based on AUC)
+        best_model_name = max(metrics.items(), key=lambda x: x[1]['auc_roc'])[0]
+        best_model_dict = {
+            'logistic_regression': lr_model,
+            'xgboost': xgb_model,
+            'random_forest': rf_model
+        }
+        
         _ = create_sample_predictions(
-            model=model,
+            model=best_model_dict[best_model_name],
             test_data=test,
             sample_size=100,
             output_path="data/sample_predictions.csv"
@@ -385,7 +474,8 @@ def main():
         
         return {
             'patient_risk_distribution': df.groupby('person_id')['risk_tier'].first().value_counts().to_dict(),
-            'model_metrics': metrics
+            'model_metrics': metrics,
+            'best_model': best_model_name
         }
         
     except Exception as e:
@@ -395,5 +485,12 @@ def main():
 if __name__ == "__main__":
     results = main()
     print("\nFinal Results:")
-    print(f"Risk Tier Distribution: {results['patient_risk_distribution']}")  # Changed key name
-    print(f"Model Metrics: {results['model_metrics']}")
+    print(f"Risk Tier Distribution: {results['patient_risk_distribution']}")
+    print(f"Best Model: {results['best_model']}")
+    print("\nModel Metrics:")
+    for model_name, metrics in results['model_metrics'].items():
+        print(f"\n{model_name.title()}:")
+        print(f"AUC-ROC: {metrics['auc_roc']:.3f}")
+        print(f"Precision: {metrics['precision']:.3f}")
+        print(f"Recall: {metrics['recall']:.3f}")
+        print(f"F1: {metrics['f1']:.3f}")
