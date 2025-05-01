@@ -236,12 +236,12 @@ def calculate_risk_tiers(df):
 
 def evaluate_model(model, X_val, y_val):
     """
-    Evaluate model performance on validation set
+    Evaluate model performance on test set
     
     Args:
         model: Trained model
-        X_val (pd.DataFrame): Validation features
-        y_val (pd.Series): Validation target
+        X_val (pd.DataFrame): Test features
+        y_val (pd.Series): Test target
         
     Returns:
         dict: Evaluation metrics
@@ -260,7 +260,7 @@ def evaluate_model(model, X_val, y_val):
             'f1': report['weighted avg']['f1-score']
         }
         
-        logging.info(f"Validation AUC-ROC: {metrics['auc_roc']:.2f}")
+        logging.info(f"Test Set AUC-ROC: {metrics['auc_roc']:.2f}")
         return metrics
     except Exception as e:
         logging.error(f"Error evaluating model: {str(e)}")
@@ -307,90 +307,18 @@ def temporal_split(df):
         val = df[df['person_id'].isin(val_patients)]
         test = df[df['person_id'].isin(test_patients)]
         
-        logging.info(f"Patient-based split - Train: {len(train_patients)}, Val: {len(val_patients)}, Test: {len(test_patients)}")
+        # Log both patient counts and encounter counts
+        logging.info(f"Patient-based split - Train: {len(train_patients)}, Val: {len(val_patients)}, Test: {len(test_patients)} patients")
+        logging.info(f"Encounter-based split - Train: {len(train)}, Val: {len(val)}, Test: {len(test)} encounters")
+        print("\nDataset Sizes:")
+        print(f"Training set: {len(train)} encounters ({len(train_patients)} patients)")
+        print(f"Validation set: {len(val)} encounters ({len(val_patients)} patients)")
+        print(f"Test set: {len(test)} encounters ({len(test_patients)} patients)")
+        
         return train, val, test
     except Exception as e:
         logging.error(f"Error in temporal split: {str(e)}")
         raise
-
-
-def create_sample_predictions(model, test_data, sample_size=100, output_path="sample_predictions.csv"):
-    """
-    Generate sample predictions for demonstration and analysis
-    
-    Args:
-        model: Trained model
-        test_data (pd.DataFrame): Test dataset
-        sample_size (int): Number of unique patients to sample (one record per patient)
-        output_path (str): Path to save sample predictions
-        
-    Returns:
-        pd.DataFrame: Sample predictions with key columns (one row per patient)
-    """
-    try:
-        logging.info("Creating sample predictions...")
-        
-        # Define required columns that must not have missing values
-        required_columns = [
-            'Next_clinical_appointment', 'CD4_Count', 'Viral_Load', 
-            'num_past_iits', 'pct_late_arrivals'
-        ]
-        
-        # Filter test data to only include rows with no missing values in required columns
-        complete_data = test_data.dropna(subset=required_columns)
-        
-        # Get unique patients from complete data
-        unique_patients = complete_data['person_id'].unique()
-        
-        # Sample patients (if we have enough)
-        sample_size = min(sample_size, len(unique_patients))
-        sampled_patients = np.random.choice(unique_patients, size=sample_size, replace=False)
-        
-        # Create empty DataFrame to hold complete records
-        sample_data = pd.DataFrame()
-        
-        # For each sampled patient, get their latest complete encounter
-        for patient_id in sampled_patients:
-            patient_records = complete_data[complete_data['person_id'] == patient_id]
-            
-            if not patient_records.empty:
-                # Get the latest complete record
-                latest_record = patient_records.loc[patient_records['Encounter_Date'].idxmax()]
-                sample_data = pd.concat([sample_data, pd.DataFrame([latest_record])], ignore_index=True)
-        
-        # Check if we have enough complete records
-        if len(sample_data) < sample_size:
-            logging.warning(f"Only found {len(sample_data)} complete patient records instead of {sample_size}")
-        
-        # Generate predictions
-        features = [
-            'num_past_iits', 'pct_late_arrivals', 'CD4_Count',
-            'Viral_Load', 'age_at_scheduled_appointment',
-            'Current_WHO_HIV_Stage', 'gender'
-        ]
-        
-        # Add predictions to sample data
-        sample_data['predicted_iit_prob'] = model.predict_proba(sample_data[features])[:, 1]
-
-        # Select key columns for analysis
-        output_cols = [
-            'person_id', 'Encounter_Date', 'Next_clinical_appointment', 'overall_appointment_success', 'Current_WHO_HIV_Stage', 
-         'risk_tier', 'adherence_target',
-            'num_past_iits', 'pct_late_arrivals', 
-            'CD4_Count', 'Viral_Load'
-        ]
-
-        # Save to CSV
-        sample_data[output_cols].to_csv(output_path, index=False)
-        logging.info(f"Saved sample predictions for exactly {len(sample_data)} patients to {output_path}")
-        
-        return sample_data[output_cols]
-
-    except Exception as e:
-        logging.error(f"Error creating sample predictions: {str(e)}")
-        raise
-
-
 
 def main():
     """Main execution pipeline"""
@@ -443,11 +371,11 @@ def main():
             preprocessor
         )
         
-        # 6. Evaluate all models
-        metrics = {
-            'logistic_regression': evaluate_model(lr_model, val[features], val['adherence_target']),
-            'xgboost': evaluate_model(xgb_model, val[features], val['adherence_target']),
-            'random_forest': evaluate_model(rf_model, val[features], val['adherence_target'])
+        # 6. Evaluate all models on test set instead of validation
+        test_metrics = {
+            'logistic_regression': evaluate_model(lr_model, test[features], test['adherence_target']),
+            'xgboost': evaluate_model(xgb_model, test[features], test['adherence_target']),
+            'random_forest': evaluate_model(rf_model, test[features], test['adherence_target'])
         }
         
         # 7. Save all artifacts
@@ -457,25 +385,14 @@ def main():
         joblib.dump(preprocessor, "models/preprocessor.pkl")
         logging.info("All models and preprocessor saved successfully")
         
-        # 8. Create sample predictions (using best model based on AUC)
-        best_model_name = max(metrics.items(), key=lambda x: x[1]['auc_roc'])[0]
-        best_model_dict = {
-            'logistic_regression': lr_model,
-            'xgboost': xgb_model,
-            'random_forest': rf_model
-        }
-        
-        _ = create_sample_predictions(
-            model=best_model_dict[best_model_name],
-            test_data=test,
-            sample_size=100,
-            output_path="data/sample_predictions.csv"
-        )
+        # Find best model based on test set AUC
+        best_model_name = max(test_metrics.items(), key=lambda x: x[1]['auc_roc'])[0]
         
         return {
             'patient_risk_distribution': df.groupby('person_id')['risk_tier'].first().value_counts().to_dict(),
-            'model_metrics': metrics,
-            'best_model': best_model_name
+            'model_metrics': test_metrics,  # Changed from validation metrics to test metrics
+            'best_model': best_model_name,
+            'test_set_size': len(test)  # Adding test set size for reference
         }
         
     except Exception as e:
@@ -494,3 +411,4 @@ if __name__ == "__main__":
         print(f"Precision: {metrics['precision']:.3f}")
         print(f"Recall: {metrics['recall']:.3f}")
         print(f"F1: {metrics['f1']:.3f}")
+    print(f"\nTest Set Size: {results['test_set_size']}")
