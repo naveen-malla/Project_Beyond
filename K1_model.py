@@ -95,12 +95,23 @@ def create_preprocessor():
         ColumnTransformer: Configured preprocessing pipeline
     """
     numeric_features = [
-        'num_past_iits', 'pct_late_arrivals',
-        'CD4_Count', 'Viral_Load', 'age_at_scheduled_appointment'
+        'num_past_iits',
+        'CD4_Count', 
+        'Viral_Load',
+        'height',
+        'weight',
+        'overall_appointment_success',
+        'time_since_diagnosis_at_scheduled_appointment',
+        'prev_iit_status',
+        'second_last_iit_status'
     ]
     
     categorical_features = [
-        'Current_WHO_HIV_Stage', 'gender'
+        'Current_WHO_HIV_Stage',
+        'gender',
+        'age_group',
+        'risk_tier',
+        'Is_ART'
     ]
     
     preprocessor = ColumnTransformer(
@@ -298,9 +309,9 @@ def temporal_split(df):
         patient_last_encounter = df.groupby('person_id')['Encounter_Date'].max()
         
         # Split patients based on last encounter year
-        train_patients = patient_last_encounter[patient_last_encounter.dt.year <= 2020].index
-        val_patients = patient_last_encounter[patient_last_encounter.dt.year == 2021].index
-        test_patients = patient_last_encounter[patient_last_encounter.dt.year >= 2022].index
+        train_patients = patient_last_encounter[patient_last_encounter.dt.year <= 2022].index
+        val_patients = patient_last_encounter[patient_last_encounter.dt.year == 2023].index
+        test_patients = patient_last_encounter[patient_last_encounter.dt.year >= 2024].index
         
         # Split encounters accordingly
         train = df[df['person_id'].isin(train_patients)]
@@ -342,9 +353,13 @@ def main():
 
         # 4. Prepare model features
         features = [
-            'num_past_iits', 'pct_late_arrivals', 
-            'CD4_Count', 'Viral_Load', 'age_at_scheduled_appointment',
-            'Current_WHO_HIV_Stage', 'gender'
+            'num_past_iits', 'CD4_Count', 
+            'Viral_Load', 'height', 'weight',
+            'overall_appointment_success',
+            'time_since_diagnosis_at_scheduled_appointment',
+            'prev_iit_status', 'second_last_iit_status',
+            'Current_WHO_HIV_Stage', 'gender',
+            'age_group', 'risk_tier', 'Is_ART'
         ]
         
         # 5. Train all models
@@ -411,4 +426,4 @@ if __name__ == "__main__":
         print(f"Precision: {metrics['precision']:.3f}")
         print(f"Recall: {metrics['recall']:.3f}")
         print(f"F1: {metrics['f1']:.3f}")
-    print(f"\nTest Set Size: {results['test_set_size']}")
+
