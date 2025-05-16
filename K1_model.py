@@ -15,6 +15,7 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
+import xgboost as xgb
 import joblib
 import logging
 import os
@@ -177,28 +178,70 @@ def train_random_forest_model(X_train, y_train, preprocessor):
         logging.error(f"Error training Random Forest model: {str(e)}")
         raise
 
-def train_xgboost_model(X_train, y_train, preprocessor):
+def train_xgboost_model(X_train, y_train, X_val, y_val, preprocessor):
     """
-    Train XGBoost model for adherence prediction
+    Train XGBoost model with validation monitoring
+    
+    Args:
+        X_train (pd.DataFrame): Training features
+        y_train (pd.Series): Training target
+        X_val (pd.DataFrame): Validation features
+        y_val (pd.Series): Validation target
+        preprocessor: Feature preprocessor
+        
+    Returns:
+        tuple: (trained model, training history)
     """
     try:
-        # Create pipeline with proper XGBoost parameters
+        # Pre-process data
+        preprocessor.fit(X_train)
+        X_train_processed = preprocessor.transform(X_train)
+        X_val_processed = preprocessor.transform(X_val)
+        
+        # Initialize XGBoost with better parameters
+        xgb_classifier = XGBClassifier(
+            objective='binary:logistic',
+            n_estimators=1000,  # Maximum number of trees
+            max_depth=6,
+            min_child_weight=1,
+            learning_rate=0.01,  # Slower learning rate for better convergence
+            subsample=0.8,
+            colsample_bytree=0.8,
+            scale_pos_weight=3,  # Help with class imbalance
+            tree_method='hist',
+            eval_metric='auc',  # Monitor AUC
+            random_state=42,
+            callbacks=[xgb.callback.EarlyStopping(
+                rounds=50,
+                save_best=True,
+                maximize=True
+            )]
+        )
+        
+        print("\nTraining XGBoost with validation monitoring:")
+        # Convert to DMatrix for faster training
+        dtrain = xgb.DMatrix(X_train_processed, label=y_train)
+        dval = xgb.DMatrix(X_val_processed, label=y_val)
+        
+        # Train the model
+        xgb_classifier.fit(
+            X_train_processed, y_train,
+            eval_set=[(X_val_processed, y_val)],
+            verbose=True
+        )
+        
+        val_pred = xgb_classifier.predict_proba(X_val_processed)[:, 1]
+        val_auc = roc_auc_score(y_val, val_pred)
+        print(f"\nValidation AUC: {val_auc:.4f}")
+        
+        # Create final pipeline
         model = Pipeline([
             ('preprocessor', preprocessor),
-            ('classifier', XGBClassifier(
-                objective='binary:logistic',
-                n_estimators=100,
-                max_depth=4,
-                learning_rate=0.1,
-                tree_method='hist',  # More efficient tree method
-                random_state=42
-            ))
+            ('classifier', xgb_classifier)
         ])
         
-        # Train model
-        model.fit(X_train, y_train)
-        logging.info("XGBoost model trained successfully")
         return model
+        
     except Exception as e:
         logging.error(f"Error training XGBoost model: {str(e)}")
         raise
@@ -372,10 +415,12 @@ def main():
             preprocessor
         )
         
-        # Train XGBoost
+        # Train XGBoost with validation monitoring
         xgb_model = train_xgboost_model(
             train[features], 
             train['adherence_target'],
+            val[features],
+            val['adherence_target'],
             preprocessor
         )
         
