@@ -1,4 +1,4 @@
-"""
+`"""
 HIV Treatment Adherence Prediction Pipeline
 Author: Naveen Malla
 Date: 2025-04-10
@@ -125,53 +125,117 @@ def create_preprocessor():
     
     return preprocessor
 
-def train_adherence_model(X_train, y_train, preprocessor):
+def train_adherence_model(X_train, y_train, X_val, y_val, preprocessor):
     """
     Train logistic regression model for adherence prediction
     
     Args:
         X_train (pd.DataFrame): Training features
         y_train (pd.Series): Training target
+        X_val (pd.DataFrame): Validation features
+        y_val (pd.Series): Validation target
         preprocessor (ColumnTransformer): Fitted preprocessor
         
     Returns:
-        tuple: (fitted model, fitted preprocessor)
+        Pipeline: Fitted model pipeline
     """
     try:
-        # Create pipeline
+        # Calculate class weights similar to XGBoost's scale_pos_weight
+        neg, pos = np.bincount(y_train)
+        scale_pos_weight = neg / pos
+        
+        # Create pipeline with optimized parameters
         model = Pipeline([
             ('preprocessor', preprocessor),
-            ('classifier', LogisticRegression(class_weight='balanced', max_iter=1000))
+            ('classifier', LogisticRegression(
+                class_weight={0: 1, 1: scale_pos_weight},
+                max_iter=2000,
+                C=0.1,
+                penalty='l2',
+                solver='saga',
+                tol=1e-4,
+                random_state=42,
+                n_jobs=-1
+            ))
         ])
+        
+        # Pre-process validation data for monitoring
+        preprocessor.fit(X_train)
+        X_train_processed = preprocessor.transform(X_train)
+        X_val_processed = preprocessor.transform(X_val)
+        
+        print("\nTraining Logistic Regression with validation monitoring:")
         
         # Train model
         model.fit(X_train, y_train)
+        
+        # Calculate validation metrics
+        val_pred = model.predict_proba(X_val)[:, 1]
+        val_auc = roc_auc_score(y_val, val_pred)
+        print(f"Validation AUC: {val_auc:.4f}")
+        
         logging.info("Adherence model trained successfully")
         return model
     except Exception as e:
         logging.error(f"Error training model: {str(e)}")
         raise
 
-def train_random_forest_model(X_train, y_train, preprocessor):
+def train_random_forest_model(X_train, y_train, X_val, y_val, preprocessor):
     """
     Train Random Forest model for adherence prediction
+    
+    Args:
+        X_train (pd.DataFrame): Training features
+        y_train (pd.Series): Training target
+        X_val (pd.DataFrame): Validation features
+        y_val (pd.Series): Validation target
+        preprocessor (ColumnTransformer): Fitted preprocessor
+        
+    Returns:
+        Pipeline: Fitted model pipeline
     """
     try:
-        # Create pipeline
+        # Calculate class weights similar to XGBoost's scale_pos_weight
+        neg, pos = np.bincount(y_train)
+        scale_pos_weight = neg / pos
+        
+        # Create pipeline with optimized parameters
         model = Pipeline([
             ('preprocessor', preprocessor),
             ('classifier', RandomForestClassifier(
-                n_estimators=100,
-                max_depth=10,
-                min_samples_split=10,
-                class_weight='balanced',
+                n_estimators=1000,  
+                max_depth=6,       
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features='sqrt',
+                bootstrap=True,
+                oob_score=True,
+                class_weight={0: 1, 1: scale_pos_weight},
                 random_state=42,
-                n_jobs=-1  # Use all available cores
+                n_jobs=-1,
+                verbose=1
             ))
         ])
         
+        # Pre-process validation data for monitoring
+        preprocessor.fit(X_train)
+        X_train_processed = preprocessor.transform(X_train)
+        X_val_processed = preprocessor.transform(X_val)
+        
+        print("\nTraining Random Forest with validation monitoring:")
+        
         # Train model
         model.fit(X_train, y_train)
+        
+        # Get OOB score and validation metrics
+        rf_classifier = model.named_steps['classifier']
+        oob_score = rf_classifier.oob_score_
+        print(f"Out-of-bag score: {oob_score:.4f}")
+        
+        val_pred = model.predict_proba(X_val)[:, 1]
+        val_auc = roc_auc_score(y_val, val_pred)
+        print(f"Validation AUC: {val_auc:.4f}")
+        
         logging.info("Random Forest model trained successfully")
         return model
     except Exception as e:
@@ -408,14 +472,16 @@ def main():
         # 5. Train all models
         preprocessor = create_preprocessor()
         
-        # Train Logistic Regression
+        # Train Logistic Regression with validation
         lr_model = train_adherence_model(
             train[features], 
             train['adherence_target'],
+            val[features],
+            val['adherence_target'],
             preprocessor
         )
         
-        # Train XGBoost with validation monitoring
+        # Train XGBoost with validation
         xgb_model = train_xgboost_model(
             train[features], 
             train['adherence_target'],
@@ -424,14 +490,16 @@ def main():
             preprocessor
         )
         
-        # Train Random Forest
+        # Train Random Forest with validation
         rf_model = train_random_forest_model(
             train[features], 
             train['adherence_target'],
+            val[features],
+            val['adherence_target'],
             preprocessor
         )
         
-        # 6. Evaluate all models on test set instead of validation
+        # 6. Evaluate all models on test set
         test_metrics = {
             'logistic_regression': evaluate_model(lr_model, test[features], test['adherence_target']),
             'xgboost': evaluate_model(xgb_model, test[features], test['adherence_target']),
@@ -450,9 +518,9 @@ def main():
         
         return {
             'patient_risk_distribution': df.groupby('person_id')['risk_tier'].first().value_counts().to_dict(),
-            'model_metrics': test_metrics,  # Changed from validation metrics to test metrics
+            'model_metrics': test_metrics,
             'best_model': best_model_name,
-            'test_set_size': len(test)  # Adding test set size for reference
+            'test_set_size': len(test)
         }
         
     except Exception as e:
@@ -472,3 +540,4 @@ if __name__ == "__main__":
         print(f"Recall: {metrics['recall']:.3f}")
         print(f"F1: {metrics['f1']:.3f}")
 
+`
