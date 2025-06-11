@@ -1,3 +1,9 @@
 data
 
 .DS_Store
+
+cache
+
+geocode
+
+test.*
